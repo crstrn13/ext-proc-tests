@@ -27,6 +27,8 @@ func TestConcurrency(t *testing.T) {
 		{name: "C10", concurrency: 10, holdSeconds: 30, maxMemoryMB: 30},
 		{name: "C50", concurrency: 50, holdSeconds: 30, maxMemoryMB: 50},
 		{name: "C100", concurrency: 100, holdSeconds: 30, maxMemoryMB: 80},
+		{name: "C500", concurrency: 500, holdSeconds: 30, maxMemoryMB: 200},
+		{name: "C1000", concurrency: 1000, holdSeconds: 30, maxMemoryMB: 400},
 	}
 
 	for _, tc := range tests {
