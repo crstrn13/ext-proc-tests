@@ -25,6 +25,9 @@ type EnvoyConfig struct {
 	BackendAddr                   string
 	BackendPort                   int
 	AdminPort                     int
+	ExtProc2Port                  int
+	ExtProc2ResponseBodyMode      string
+	ExtraHostPorts                []int
 }
 
 func defaultEnvoyConfig() EnvoyConfig {

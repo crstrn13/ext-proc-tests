@@ -1,6 +1,8 @@
 package envoytest
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"fmt"
 	"net/http"
 	"strconv"
@@ -34,6 +36,7 @@ func BackendHandler(w http.ResponseWriter, r *http.Request) {
 			chunkSize = p
 		}
 	}
+	checksum := r.Header.Get("x-checksum") == "true"
 
 	var interval time.Duration
 	var totalChunks int
@@ -65,20 +68,28 @@ func BackendHandler(w http.ResponseWriter, r *http.Request) {
 	}
 	flusher.Flush()
 
+	hasher := sha256.New()
 	for i := 1; i <= totalChunks; i++ {
 		select {
 		case <-r.Context().Done():
 			return
 		case <-time.After(interval):
 		}
+		var line string
 		if chunkSize > 0 {
-			fmt.Fprintf(w, "data: {\"chunk\":%d,\"total\":%d,\"payload\":\"%s\"}\n\n", i, totalChunks, payload)
+			line = fmt.Sprintf("data: {\"chunk\":%d,\"total\":%d,\"payload\":\"%s\"}\n\n", i, totalChunks, payload)
 		} else {
-			fmt.Fprintf(w, "data: token_%d (chunk %d/%d)\n\n", i, i, totalChunks)
+			line = fmt.Sprintf("data: token_%d (chunk %d/%d)\n\n", i, i, totalChunks)
 		}
+		fmt.Fprint(w, line)
+		hasher.Write([]byte(line))
 		flusher.Flush()
 	}
 
+	if checksum {
+		fmt.Fprintf(w, "data: {\"sha256\":\"%s\"}\n\n", hex.EncodeToString(hasher.Sum(nil)))
+		flusher.Flush()
+	}
 	fmt.Fprintf(w, "data: [DONE]\n\n")
 	flusher.Flush()
 }

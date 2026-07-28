@@ -32,6 +32,7 @@ func (s *extProcServer) Process(stream ext_proc.ExternalProcessor_ProcessServer)
 	defer s.activeStreams.Add(-1)
 
 	var procDelayMs int
+	var fullDuplex bool
 
 	for {
 		req, err := stream.Recv()
@@ -49,6 +50,9 @@ func (s *extProcServer) Process(stream ext_proc.ExternalProcessor_ProcessServer)
 					if parsed, err := strconv.Atoi(val); err == nil {
 						procDelayMs = parsed
 					}
+				}
+				if headerValue(v.RequestHeaders.Headers.Headers, "x-full-duplex") == "true" {
+					fullDuplex = true
 				}
 			}
 			if err := stream.Send(&ext_proc.ProcessingResponse{
@@ -87,11 +91,42 @@ func (s *extProcServer) Process(stream ext_proc.ExternalProcessor_ProcessServer)
 			if procDelayMs > 0 {
 				time.Sleep(time.Duration(procDelayMs) * time.Millisecond)
 			}
-			if err := stream.Send(&ext_proc.ProcessingResponse{
-				Response: &ext_proc.ProcessingResponse_ResponseBody{
-					ResponseBody: &ext_proc.BodyResponse{
-						Response: &ext_proc.CommonResponse{Status: ext_proc.CommonResponse_CONTINUE},
+			if fullDuplex {
+				if err := stream.Send(&ext_proc.ProcessingResponse{
+					Response: &ext_proc.ProcessingResponse_ResponseBody{
+						ResponseBody: &ext_proc.BodyResponse{
+							Response: &ext_proc.CommonResponse{
+								Status: ext_proc.CommonResponse_CONTINUE,
+								BodyMutation: &ext_proc.BodyMutation{
+									Mutation: &ext_proc.BodyMutation_StreamedResponse{
+										StreamedResponse: &ext_proc.StreamedBodyResponse{
+											Body:        v.ResponseBody.Body,
+											EndOfStream: v.ResponseBody.EndOfStream,
+										},
+									},
+								},
+							},
+						},
 					},
+				}); err != nil {
+					return err
+				}
+			} else {
+				if err := stream.Send(&ext_proc.ProcessingResponse{
+					Response: &ext_proc.ProcessingResponse_ResponseBody{
+						ResponseBody: &ext_proc.BodyResponse{
+							Response: &ext_proc.CommonResponse{Status: ext_proc.CommonResponse_CONTINUE},
+						},
+					},
+				}); err != nil {
+					return err
+				}
+			}
+
+		case *ext_proc.ProcessingRequest_ResponseTrailers:
+			if err := stream.Send(&ext_proc.ProcessingResponse{
+				Response: &ext_proc.ProcessingResponse_ResponseTrailers{
+					ResponseTrailers: &ext_proc.TrailersResponse{},
 				},
 			}); err != nil {
 				return err
@@ -102,3 +137,4 @@ func (s *extProcServer) Process(stream ext_proc.ExternalProcessor_ProcessServer)
 		}
 	}
 }
+

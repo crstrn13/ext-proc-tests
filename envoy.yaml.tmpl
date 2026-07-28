@@ -41,6 +41,27 @@ static_resources:
                         response_header_mode: SEND
                         request_body_mode: {{ .RequestBodyMode }}
                         response_body_mode: {{ .ResponseBodyMode }}
+{{- if eq .ResponseBodyMode "FULL_DUPLEX_STREAMED" }}
+                        response_trailer_mode: SEND
+{{- end }}
+{{- if .ExtProc2Port }}
+                  - name: envoy.filters.http.ext_proc
+                    typed_config:
+                      "@type": type.googleapis.com/envoy.extensions.filters.http.ext_proc.v3.ExternalProcessor
+                      grpc_service:
+                        envoy_grpc:
+                          cluster_name: ext_proc_2_cluster
+                      message_timeout:
+                        seconds: {{ .MessageTimeoutSec }}
+                      processing_mode:
+                        request_header_mode: SEND
+                        response_header_mode: SEND
+                        request_body_mode: {{ .RequestBodyMode }}
+                        response_body_mode: {{ .ExtProc2ResponseBodyMode }}
+{{- if eq .ExtProc2ResponseBodyMode "FULL_DUPLEX_STREAMED" }}
+                        response_trailer_mode: SEND
+{{- end }}
+{{- end }}
                   - name: envoy.filters.http.router
                     typed_config:
                       "@type": type.googleapis.com/envoy.extensions.filters.http.router.v3.Router
@@ -78,6 +99,27 @@ static_resources:
                     socket_address:
                       address: {{ .BackendAddr }}
                       port_value: {{ .BackendPort }}
+
+{{- if .ExtProc2Port }}
+    - name: ext_proc_2_cluster
+      connect_timeout: 5s
+      type: STRICT_DNS
+      lb_policy: ROUND_ROBIN
+      typed_extension_protocol_options:
+        envoy.extensions.upstreams.http.v3.HttpProtocolOptions:
+          "@type": type.googleapis.com/envoy.extensions.upstreams.http.v3.HttpProtocolOptions
+          explicit_http_config:
+            http2_protocol_options: {}
+      load_assignment:
+        cluster_name: ext_proc_2_cluster
+        endpoints:
+          - lb_endpoints:
+              - endpoint:
+                  address:
+                    socket_address:
+                      address: {{ .ExtProcAddr }}
+                      port_value: {{ .ExtProc2Port }}
+{{- end }}
 
 admin:
   address:

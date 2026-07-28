@@ -43,6 +43,7 @@ func StartExtProcServer(t *testing.T) int {
 	return port
 }
 
+
 func StartBackend(t *testing.T) int {
 	t.Helper()
 	mux := http.NewServeMux()
@@ -94,7 +95,7 @@ func SetupEnv(t *testing.T, configFn func(*EnvoyConfig)) TestEnv {
 				FileMode:          0644,
 			},
 		},
-		HostAccessPorts: []int{extProcPort, backendPort},
+		HostAccessPorts: append([]int{extProcPort, backendPort}, cfg.ExtraHostPorts...),
 		WaitingFor: wait.ForAll(
 			wait.ForHTTP("/ready").WithPort("9901/tcp"),
 			wait.ForListeningPort("10000/tcp"),
