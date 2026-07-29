@@ -24,14 +24,18 @@ type TestEnv struct {
 	AdminURL string
 }
 
-func StartExtProcServer(t *testing.T) int {
+func StartExtProcServer(t *testing.T) (*ExtProcServer, int) {
+	return startExtProc(t, &ExtProcServer{})
+}
+
+func startExtProc(t *testing.T, srv *ExtProcServer) (*ExtProcServer, int) {
 	t.Helper()
 	lis, err := net.Listen("tcp", "0.0.0.0:0")
 	require.NoError(t, err)
 	port := lis.Addr().(*net.TCPAddr).Port
 
 	s := grpc.NewServer()
-	ext_proc.RegisterExternalProcessorServer(s, &extProcServer{})
+	ext_proc.RegisterExternalProcessorServer(s, srv)
 
 	go func() {
 		if err := s.Serve(lis); err != nil {
@@ -40,13 +44,15 @@ func StartExtProcServer(t *testing.T) int {
 	}()
 	t.Cleanup(s.GracefulStop)
 
-	return port
+	return srv, port
 }
 
 
 func StartBackend(t *testing.T) int {
 	t.Helper()
 	mux := http.NewServeMux()
+	mux.HandleFunc("/echo", EchoHandler)
+	mux.HandleFunc("/inference", InferenceHandler)
 	mux.HandleFunc("/", BackendHandler)
 
 	lis, err := net.Listen("tcp", "0.0.0.0:0")
@@ -68,11 +74,25 @@ func StartBackend(t *testing.T) int {
 	return port
 }
 
+func SetupEnvWithExtProcDelay(t *testing.T, bodyDelayMs int, configFn func(*EnvoyConfig)) TestEnv {
+	t.Helper()
+	_, extProcPort := startExtProc(t, &ExtProcServer{
+		BodyDelayMs:      bodyDelayMs,
+		AlwaysStreamBody: bodyDelayMs > 0,
+	})
+	return setupEnvoy(t, extProcPort, configFn)
+}
+
 func SetupEnv(t *testing.T, configFn func(*EnvoyConfig)) TestEnv {
+	t.Helper()
+	_, extProcPort := StartExtProcServer(t)
+	return setupEnvoy(t, extProcPort, configFn)
+}
+
+func setupEnvoy(t *testing.T, extProcPort int, configFn func(*EnvoyConfig)) TestEnv {
 	t.Helper()
 	ctx := context.Background()
 
-	extProcPort := StartExtProcServer(t)
 	backendPort := StartBackend(t)
 
 	cfg := defaultEnvoyConfig()
@@ -82,11 +102,26 @@ func SetupEnv(t *testing.T, configFn func(*EnvoyConfig)) TestEnv {
 		configFn(&cfg)
 	}
 
+	seen := map[int]bool{extProcPort: true, backendPort: true}
+	hostPorts := []int{extProcPort, backendPort}
+	for _, f := range cfg.Filters {
+		if f.Port > 0 && !seen[f.Port] {
+			hostPorts = append(hostPorts, f.Port)
+			seen[f.Port] = true
+		}
+	}
+	for _, p := range cfg.ExtraHostPorts {
+		if !seen[p] {
+			hostPorts = append(hostPorts, p)
+			seen[p] = true
+		}
+	}
+
 	configBytes, err := renderEnvoyConfig(cfg)
 	require.NoError(t, err)
 
 	req := testcontainers.ContainerRequest{
-		Image:        "envoyproxy/envoy:v1.37-latest",
+		Image:        cfg.EnvoyImage,
 		ExposedPorts: []string{"10000/tcp", "9901/tcp"},
 		Files: []testcontainers.ContainerFile{
 			{
@@ -95,7 +130,7 @@ func SetupEnv(t *testing.T, configFn func(*EnvoyConfig)) TestEnv {
 				FileMode:          0644,
 			},
 		},
-		HostAccessPorts: append([]int{extProcPort, backendPort}, cfg.ExtraHostPorts...),
+		HostAccessPorts: hostPorts,
 		WaitingFor: wait.ForAll(
 			wait.ForHTTP("/ready").WithPort("9901/tcp"),
 			wait.ForListeningPort("10000/tcp"),

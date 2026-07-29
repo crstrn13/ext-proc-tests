@@ -1,6 +1,8 @@
 package envoytest
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"io"
 	"log"
 	"strconv"
@@ -11,11 +13,25 @@ import (
 	ext_proc "github.com/envoyproxy/go-control-plane/envoy/service/ext_proc/v3"
 )
 
-type extProcServer struct {
+type ExtProcServer struct {
 	ext_proc.UnimplementedExternalProcessorServer
-	activeStreams atomic.Int64
-	totalStreams  atomic.Int64
+	activeStreams       atomic.Int64
+	totalStreams        atomic.Int64
+	requestEosDups     atomic.Int64
+	requestBodyChunks  atomic.Int64
+	responseBodyChunks atomic.Int64
+	requestBodyMismatches atomic.Int64
+	BodyDelayMs              int
+	RequestBodyDelayMs       int
+	AlwaysStreamBody         bool
+	AlwaysStreamRequestBody  bool
+	AlwaysStreamResponseBody bool
 }
+
+func (s *ExtProcServer) RequestEosDups() int64        { return s.requestEosDups.Load() }
+func (s *ExtProcServer) RequestBodyChunks() int64      { return s.requestBodyChunks.Load() }
+func (s *ExtProcServer) ResponseBodyChunks() int64     { return s.responseBodyChunks.Load() }
+func (s *ExtProcServer) RequestBodyMismatches() int64  { return s.requestBodyMismatches.Load() }
 
 func headerValue(headers []*core.HeaderValue, key string) string {
 	for _, h := range headers {
@@ -26,13 +42,17 @@ func headerValue(headers []*core.HeaderValue, key string) string {
 	return ""
 }
 
-func (s *extProcServer) Process(stream ext_proc.ExternalProcessor_ProcessServer) error {
+func (s *ExtProcServer) Process(stream ext_proc.ExternalProcessor_ProcessServer) error {
 	id := s.totalStreams.Add(1)
 	s.activeStreams.Add(1)
 	defer s.activeStreams.Add(-1)
 
 	var procDelayMs int
+	var respHeaderDelayMs int
 	var fullDuplex bool
+	var requestEosSeen bool
+	var expectedBodyHash string
+	reqHasher := sha256.New()
 
 	for {
 		req, err := stream.Recv()
@@ -51,9 +71,15 @@ func (s *extProcServer) Process(stream ext_proc.ExternalProcessor_ProcessServer)
 						procDelayMs = parsed
 					}
 				}
+				if val := headerValue(v.RequestHeaders.Headers.Headers, "x-response-header-delay-ms"); val != "" {
+					if parsed, err := strconv.Atoi(val); err == nil {
+						respHeaderDelayMs = parsed
+					}
+				}
 				if headerValue(v.RequestHeaders.Headers.Headers, "x-full-duplex") == "true" {
 					fullDuplex = true
 				}
+				expectedBodyHash = headerValue(v.RequestHeaders.Headers.Headers, "x-expected-body-hash")
 			}
 			if err := stream.Send(&ext_proc.ProcessingResponse{
 				Response: &ext_proc.ProcessingResponse_RequestHeaders{
@@ -66,17 +92,61 @@ func (s *extProcServer) Process(stream ext_proc.ExternalProcessor_ProcessServer)
 			}
 
 		case *ext_proc.ProcessingRequest_RequestBody:
-			if err := stream.Send(&ext_proc.ProcessingResponse{
-				Response: &ext_proc.ProcessingResponse_RequestBody{
-					RequestBody: &ext_proc.BodyResponse{
-						Response: &ext_proc.CommonResponse{Status: ext_proc.CommonResponse_CONTINUE},
+			s.requestBodyChunks.Add(1)
+			reqHasher.Write(v.RequestBody.Body)
+			if v.RequestBody.EndOfStream {
+				if requestEosSeen {
+					s.requestEosDups.Add(1)
+					log.Printf("[ext-proc stream %d] DUPLICATE RequestBody end_of_stream=true", id)
+				}
+				requestEosSeen = true
+				if expectedBodyHash != "" {
+					got := hex.EncodeToString(reqHasher.Sum(nil))
+					if got != expectedBodyHash {
+						s.requestBodyMismatches.Add(1)
+						log.Printf("[ext-proc stream %d] REQUEST BODY MISMATCH expected=%s got=%s", id, expectedBodyHash, got)
+					}
+				}
+			}
+			if s.RequestBodyDelayMs > 0 {
+				time.Sleep(time.Duration(s.RequestBodyDelayMs) * time.Millisecond)
+			}
+			if fullDuplex || s.AlwaysStreamBody || s.AlwaysStreamRequestBody {
+				if err := stream.Send(&ext_proc.ProcessingResponse{
+					Response: &ext_proc.ProcessingResponse_RequestBody{
+						RequestBody: &ext_proc.BodyResponse{
+							Response: &ext_proc.CommonResponse{
+								Status: ext_proc.CommonResponse_CONTINUE,
+								BodyMutation: &ext_proc.BodyMutation{
+									Mutation: &ext_proc.BodyMutation_StreamedResponse{
+										StreamedResponse: &ext_proc.StreamedBodyResponse{
+											Body:        v.RequestBody.Body,
+											EndOfStream: v.RequestBody.EndOfStream,
+										},
+									},
+								},
+							},
+						},
 					},
-				},
-			}); err != nil {
-				return err
+				}); err != nil {
+					return err
+				}
+			} else {
+				if err := stream.Send(&ext_proc.ProcessingResponse{
+					Response: &ext_proc.ProcessingResponse_RequestBody{
+						RequestBody: &ext_proc.BodyResponse{
+							Response: &ext_proc.CommonResponse{Status: ext_proc.CommonResponse_CONTINUE},
+						},
+					},
+				}); err != nil {
+					return err
+				}
 			}
 
 		case *ext_proc.ProcessingRequest_ResponseHeaders:
+			if respHeaderDelayMs > 0 {
+				time.Sleep(time.Duration(respHeaderDelayMs) * time.Millisecond)
+			}
 			if err := stream.Send(&ext_proc.ProcessingResponse{
 				Response: &ext_proc.ProcessingResponse_ResponseHeaders{
 					ResponseHeaders: &ext_proc.HeadersResponse{
@@ -88,10 +158,15 @@ func (s *extProcServer) Process(stream ext_proc.ExternalProcessor_ProcessServer)
 			}
 
 		case *ext_proc.ProcessingRequest_ResponseBody:
-			if procDelayMs > 0 {
-				time.Sleep(time.Duration(procDelayMs) * time.Millisecond)
+			s.responseBodyChunks.Add(1)
+			delay := procDelayMs
+			if delay == 0 {
+				delay = s.BodyDelayMs
 			}
-			if fullDuplex {
+			if delay > 0 {
+				time.Sleep(time.Duration(delay) * time.Millisecond)
+			}
+			if fullDuplex || s.AlwaysStreamBody || s.AlwaysStreamResponseBody {
 				if err := stream.Send(&ext_proc.ProcessingResponse{
 					Response: &ext_proc.ProcessingResponse_ResponseBody{
 						ResponseBody: &ext_proc.BodyResponse{
@@ -123,6 +198,15 @@ func (s *extProcServer) Process(stream ext_proc.ExternalProcessor_ProcessServer)
 				}
 			}
 
+		case *ext_proc.ProcessingRequest_RequestTrailers:
+			if err := stream.Send(&ext_proc.ProcessingResponse{
+				Response: &ext_proc.ProcessingResponse_RequestTrailers{
+					RequestTrailers: &ext_proc.TrailersResponse{},
+				},
+			}); err != nil {
+				return err
+			}
+
 		case *ext_proc.ProcessingRequest_ResponseTrailers:
 			if err := stream.Send(&ext_proc.ProcessingResponse{
 				Response: &ext_proc.ProcessingResponse_ResponseTrailers{
@@ -137,4 +221,3 @@ func (s *extProcServer) Process(stream ext_proc.ExternalProcessor_ProcessServer)
 		}
 	}
 }
-

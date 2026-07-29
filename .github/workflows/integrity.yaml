@@ -1,0 +1,43 @@
+name: ext-proc integrity
+
+on:
+  workflow_dispatch:
+    inputs:
+      test_filter:
+        description: "Test filter regex (default: all except longevity)"
+        default: "TestInferenceIntegrity|TestStreamingIntegrity|TestStreamingConcurrency|TestStreamingDisconnect|TestChainIntegrityRegression"
+      timeout:
+        description: "Test timeout"
+        default: "30m"
+
+jobs:
+  integrity:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+
+      - name: Run tests
+        run: |
+          go test -v -count=1 -timeout ${{ inputs.timeout }} \
+            -run '${{ inputs.test_filter }}' \
+            ./full_duplex_streamed/ 2>&1 | tee test-output.txt
+
+      - name: Summary
+        if: always()
+        run: |
+          echo '## ext-proc integrity results' >> $GITHUB_STEP_SUMMARY
+          echo '' >> $GITHUB_STEP_SUMMARY
+          echo '```' >> $GITHUB_STEP_SUMMARY
+          grep -E '(FAIL|PASS|filter\[|reqCorrupt|respCorrupt|integrity|transport|mismatch|concurrency|disconnect)' test-output.txt >> $GITHUB_STEP_SUMMARY || true
+          echo '```' >> $GITHUB_STEP_SUMMARY
+
+      - name: Upload full output
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: test-output
+          path: test-output.txt
