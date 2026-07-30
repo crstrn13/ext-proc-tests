@@ -38,10 +38,10 @@ func TestStreamingIntegrity(t *testing.T) {
 				intervalMs int
 				holdSecs   int
 			}{
-				{"single_small_fast", 1000, 1024, 10, 10},
-				{"single_large_slow", 200, 100 * 1024, 50, 10},
-				{"single_burst", 2000, 512, 1, 2},
-				{"single_xl_chunks", 100, 512 * 1024, 100, 10},
+				{"single_1KB_chunks_x1000", 1000, 1024, 10, 10},
+				{"single_100KB_chunks_x200", 200, 100 * 1024, 50, 10},
+				{"single_512B_burst_x2000", 2000, 512, 1, 2},
+				{"single_512KB_chunks_x100", 100, 512 * 1024, 100, 10},
 			}
 			for _, tc := range singleTests {
 				t.Run(tc.name, func(t *testing.T) {

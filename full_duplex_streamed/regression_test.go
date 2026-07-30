@@ -1,6 +1,6 @@
 // Regression test: confirms chained FD_STREAMED body truncation on older Envoy versions
 // and verifies the fix on v1.37+. Uses bulk /echo endpoint because the original bug
-// (envoy#41654) was found with simple body echo.
+// (envoy#44605) was found with simple body echo.
 package fullduplexstreamed_test
 
 import (
@@ -77,7 +77,7 @@ func TestChainIntegrityRegression(t *testing.T) {
 				assert.Equal(t, 0, errored, "errors on fixed version")
 			} else {
 				assert.Greater(t, truncated+errored, 0,
-					"expected truncation on buggy version (envoy#41654)")
+					"expected truncation on buggy version (envoy#44605)")
 			}
 		})
 	}

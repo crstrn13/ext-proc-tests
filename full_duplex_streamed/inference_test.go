@@ -39,11 +39,11 @@ func TestInferenceIntegrity(t *testing.T) {
 				intervalMs int
 				holdSecs   int
 			}{
-				{"single_2KB_fast", 2 * 1024, 1024, 10, 1},
-				{"single_50KB_fast", 50 * 1024, 1024, 10, 5},
-				{"single_500KB_slow", 500 * 1024, 100 * 1024, 50, 5},
-				{"single_2MB_fast", 2 * 1024 * 1024, 10 * 1024, 5, 5},
-				{"single_2MB_large_resp", 2 * 1024 * 1024, 100 * 1024, 25, 5},
+				{"single_2KB_small_chunks", 2 * 1024, 1024, 10, 1},
+				{"single_50KB_small_chunks", 50 * 1024, 1024, 10, 5},
+				{"single_500KB_large_chunks", 500 * 1024, 100 * 1024, 50, 5},
+				{"single_2MB_small_chunks", 2 * 1024 * 1024, 10 * 1024, 5, 5},
+				{"single_2MB_large_chunks", 2 * 1024 * 1024, 100 * 1024, 25, 5},
 			}
 			for _, tc := range singleTests {
 				t.Run(tc.name, func(t *testing.T) {

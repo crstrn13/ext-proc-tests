@@ -26,7 +26,17 @@ type ExtProcServer struct {
 	AlwaysStreamBody         bool
 	AlwaysStreamRequestBody  bool
 	AlwaysStreamResponseBody bool
+	LogLevel                 LogLevel
+	Name                     string
 }
+
+type LogLevel int
+
+const (
+	LogLevelError LogLevel = iota
+	LogLevelInfo
+	LogLevelDebug
+)
 
 func (s *ExtProcServer) RequestEosDups() int64        { return s.requestEosDups.Load() }
 func (s *ExtProcServer) RequestBodyChunks() int64      { return s.requestBodyChunks.Load() }
@@ -42,10 +52,34 @@ func headerValue(headers []*core.HeaderValue, key string) string {
 	return ""
 }
 
+func (s *ExtProcServer) prefix() string {
+	if s.Name != "" {
+		return s.Name
+	}
+	return "ext-proc"
+}
+
+func (s *ExtProcServer) debugf(id int64, format string, args ...any) {
+	if s.LogLevel >= LogLevelDebug {
+		log.Printf("[%s stream %d] "+format, append([]any{s.prefix(), id}, args...)...)
+	}
+}
+
+func (s *ExtProcServer) infof(id int64, format string, args ...any) {
+	if s.LogLevel >= LogLevelInfo {
+		log.Printf("[%s stream %d] "+format, append([]any{s.prefix(), id}, args...)...)
+	}
+}
+
+func (s *ExtProcServer) errf(id int64, format string, args ...any) {
+	log.Printf("[%s stream %d] "+format, append([]any{s.prefix(), id}, args...)...)
+}
+
 func (s *ExtProcServer) Process(stream ext_proc.ExternalProcessor_ProcessServer) error {
 	id := s.totalStreams.Add(1)
 	s.activeStreams.Add(1)
 	defer s.activeStreams.Add(-1)
+	s.infof(id, "new stream (active=%d)", s.activeStreams.Load())
 
 	var procDelayMs int
 	var respHeaderDelayMs int
@@ -65,6 +99,7 @@ func (s *ExtProcServer) Process(stream ext_proc.ExternalProcessor_ProcessServer)
 
 		switch v := req.Request.(type) {
 		case *ext_proc.ProcessingRequest_RequestHeaders:
+			s.debugf(id, "→ RequestHeaders")
 			if v.RequestHeaders != nil && v.RequestHeaders.Headers != nil {
 				if val := headerValue(v.RequestHeaders.Headers.Headers, "x-proc-delay-ms"); val != "" {
 					if parsed, err := strconv.Atoi(val); err == nil {
@@ -93,18 +128,19 @@ func (s *ExtProcServer) Process(stream ext_proc.ExternalProcessor_ProcessServer)
 
 		case *ext_proc.ProcessingRequest_RequestBody:
 			s.requestBodyChunks.Add(1)
+			s.debugf(id, "→ RequestBody len=%d eos=%v", len(v.RequestBody.Body), v.RequestBody.EndOfStream)
 			reqHasher.Write(v.RequestBody.Body)
 			if v.RequestBody.EndOfStream {
 				if requestEosSeen {
 					s.requestEosDups.Add(1)
-					log.Printf("[ext-proc stream %d] DUPLICATE RequestBody end_of_stream=true", id)
+					s.errf(id, "DUPLICATE RequestBody end_of_stream=true")
 				}
 				requestEosSeen = true
 				if expectedBodyHash != "" {
 					got := hex.EncodeToString(reqHasher.Sum(nil))
 					if got != expectedBodyHash {
 						s.requestBodyMismatches.Add(1)
-						log.Printf("[ext-proc stream %d] REQUEST BODY MISMATCH expected=%s got=%s", id, expectedBodyHash, got)
+						s.errf(id, "REQUEST BODY MISMATCH expected=%s got=%s", expectedBodyHash, got)
 					}
 				}
 			}
@@ -144,6 +180,7 @@ func (s *ExtProcServer) Process(stream ext_proc.ExternalProcessor_ProcessServer)
 			}
 
 		case *ext_proc.ProcessingRequest_ResponseHeaders:
+			s.debugf(id, "→ ResponseHeaders")
 			if respHeaderDelayMs > 0 {
 				time.Sleep(time.Duration(respHeaderDelayMs) * time.Millisecond)
 			}
@@ -159,6 +196,7 @@ func (s *ExtProcServer) Process(stream ext_proc.ExternalProcessor_ProcessServer)
 
 		case *ext_proc.ProcessingRequest_ResponseBody:
 			s.responseBodyChunks.Add(1)
+			s.debugf(id, "→ ResponseBody len=%d eos=%v", len(v.ResponseBody.Body), v.ResponseBody.EndOfStream)
 			delay := procDelayMs
 			if delay == 0 {
 				delay = s.BodyDelayMs
@@ -199,6 +237,7 @@ func (s *ExtProcServer) Process(stream ext_proc.ExternalProcessor_ProcessServer)
 			}
 
 		case *ext_proc.ProcessingRequest_RequestTrailers:
+			s.debugf(id, "→ RequestTrailers")
 			if err := stream.Send(&ext_proc.ProcessingResponse{
 				Response: &ext_proc.ProcessingResponse_RequestTrailers{
 					RequestTrailers: &ext_proc.TrailersResponse{},
@@ -208,6 +247,7 @@ func (s *ExtProcServer) Process(stream ext_proc.ExternalProcessor_ProcessServer)
 			}
 
 		case *ext_proc.ProcessingRequest_ResponseTrailers:
+			s.debugf(id, "→ ResponseTrailers")
 			if err := stream.Send(&ext_proc.ProcessingResponse{
 				Response: &ext_proc.ProcessingResponse_ResponseTrailers{
 					ResponseTrailers: &ext_proc.TrailersResponse{},
